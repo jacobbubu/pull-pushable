@@ -1,7 +1,6 @@
 import * as pull from 'pull-stream'
 import { Debug } from '@jacobbubu/debug'
-import { SourceState } from './source-state'
-import { trueToNull } from './utils'
+import { State } from './state'
 
 const getPushableName = (function() {
   let counter = 1
@@ -11,6 +10,8 @@ const getPushableName = (function() {
 type OnClose = (err?: pull.EndOrError) => void
 
 const DefaultLogger = Debug.create('pushable')
+
+export { State }
 
 export enum BufferItemIndex {
   Data = 0,
@@ -40,7 +41,7 @@ export function pushable<T>(name?: string | OnClose, onclose?: OnClose): Read<T>
     _onclose = onclose
   }
 
-  const _sourceState = new SourceState({ onEnd: _onclose })
+  const _sourceState = new State({ onEnd: _onclose })
   let _cbs: pull.SourceCallback<T>[] = []
 
   _name = name || getPushableName()
