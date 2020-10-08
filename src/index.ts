@@ -31,6 +31,7 @@ export function pushable<T>(name?: string | OnClose, onclose?: OnClose): Read<T>
   let _name: string
   let _onclose: OnClose | undefined
   let _buffer: BufferItem<T>[] = []
+  let _reentered = 0
 
   if (typeof name === 'function') {
     _onclose = name
@@ -87,14 +88,16 @@ export function pushable<T>(name?: string | OnClose, onclose?: OnClose): Read<T>
   read.push = push
   read.buffer = _buffer
 
-  const drain = () => {
-    if (_sourceState.aborting) {
+  const drainAbort = () => {
+    if (!_sourceState.aborting || _reentered > 0) return false
+    _reentered++
+
+    try {
       const abort = _sourceState.aborting
       // in case there's still data in the _buffer
-      _buffer.forEach(bufferItem => {
-        bufferItem[BufferItemIndex.Cb]?.(abort)
-      })
-      _buffer = []
+      while (_buffer.length > 0) {
+        _buffer.shift()?.[BufferItemIndex.Cb]?.(abort)
+      }
 
       // call of all waiting callback functions
       while (_cbs.length > 0) {
@@ -102,31 +105,64 @@ export function pushable<T>(name?: string | OnClose, onclose?: OnClose): Read<T>
       }
 
       _sourceState.ended(abort)
-      return
+    } finally {
+      _reentered--
     }
+    return true
+  }
 
-    while (_buffer.length > 0) {
-      const cb = _cbs.shift()
-      if (cb) {
-        const bufferItem = _buffer.shift()!
-        cb(null, bufferItem[BufferItemIndex.Data])
-        bufferItem[BufferItemIndex.Cb]?.(null)
-      } else {
-        break
+  const drainNormal = () => {
+    if (_reentered > 0) return
+
+    _reentered++
+    try {
+      while (_buffer.length > 0) {
+        const cb = _cbs.shift()
+        if (cb) {
+          const bufferItem = _buffer.shift()!
+          cb(null, bufferItem[BufferItemIndex.Data])
+          bufferItem[BufferItemIndex.Cb]?.(null)
+        } else {
+          break
+        }
       }
+    } finally {
+      _reentered--
     }
+  }
 
-    if (_sourceState.ending) {
+  const drainEnd = () => {
+    if (!_sourceState.ending || _reentered > 0) return
+    _reentered++
+
+    try {
       const end = _sourceState.ending
       // more cb is needed to satisfy the buffer
-      if (_buffer.length > 0) return
+      if (_buffer.length > 0) {
+        _reentered--
+        return
+      }
 
       // call of all waiting callback functions
       while (_cbs.length > 0) {
         _cbs.shift()?.(end)
       }
+
       _sourceState.ended(end)
+    } finally {
+      _reentered--
     }
   }
+
+  const drain = () => {
+    if (drainAbort()) return
+
+    drainNormal()
+    if (drainAbort()) return
+
+    drainEnd()
+    if (drainAbort()) return
+  }
+
   return read
 }
